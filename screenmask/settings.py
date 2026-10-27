@@ -63,6 +63,8 @@ class Settings:
         """
         self.backend.setValue("brightness_recovery", json.dumps(records))
         self.backend.sync()
+        if self.backend.status() != QSettings.Status.NoError:
+            raise OSError("Could not save the brightness recovery record.")
 
     def save(self, selected, color, lower_brightness=False, avoid_panels=False):
         """Save the display selection and color, then synchronize the store.

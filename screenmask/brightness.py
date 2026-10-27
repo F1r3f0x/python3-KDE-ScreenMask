@@ -3,7 +3,7 @@
 import shlex
 import subprocess
 
-from .displays import screen_id
+from .displays import monitor_identity, screen_id
 
 SERVICE = "org.kde.ScreenBrightness"
 ROOT = "/org/kde/ScreenBrightness"
@@ -122,6 +122,11 @@ def _matches(screen, label):
     return connector.startswith(("edp-", "lvds-")) and label == "built-in screen"
 
 
+def _connected(screens):
+    """Resolve either a display snapshot list or a live snapshot provider."""
+    return list(screens() if callable(screens) else screens)
+
+
 class BrightnessManager:
     """Track and restore the brightness of displays lowered by ScreenMask."""
 
@@ -136,34 +141,63 @@ class BrightnessManager:
         self.backend = backend if backend is not None else PowerDevilBackend()
         self.pending = settings.brightness_recovery()
 
-    def lower(self, screen, screens):
+    def lower(self, screen, screens, should_apply=lambda: True):
         """Save and lower one display's brightness when it can be identified.
 
         Args:
             screen (QScreen): Display to dim.
             screens (Iterable[QScreen]): Connected displays, used to detect ambiguity.
+            should_apply (Callable[[], bool]): Whether dimming is still requested.
 
         Raises:
             BrightnessError: If the matching display or brightness is unavailable.
         """
         key = screen_id(screen)
-        if key in self.pending:
+        if not should_apply():
             return
+        if key in self.pending:
+            record = self.pending[key]
+            self._verify_screen(key, record.get("identity"), record.get("label", "the display"), screens)
+            return
+        screens_now = _connected(screens)
+        physical_id = monitor_identity(screen)
+        if physical_id is None:
+            raise BrightnessError(f"Cannot verify the identity of {screen.name()} for brightness recovery.")
         displays = self.backend.displays()
         matches = [(path, label) for path, label in displays if _matches(screen, label)]
-        if len(matches) != 1 or sum(_matches(other, matches[0][1]) for other in screens) != 1:
+        if len(matches) != 1 or sum(_matches(other, matches[0][1]) for other in screens_now) != 1:
             raise BrightnessError(f"Cannot uniquely identify brightness control for {screen.name()}.")
         path, label = matches[0]
         original = self.backend.read(path)
-        self.pending[key] = {"label": label, "brightness": original}
-        self.settings.save_brightness_recovery(self.pending)
+        if not should_apply():
+            return
+        self._verify_screen(key, physical_id, label, screens)
+        self.pending[key] = {"label": label, "brightness": original, "identity": physical_id}
+        try:
+            self.settings.save_brightness_recovery(self.pending)
+        except OSError:
+            del self.pending[key]
+            raise
+        if not should_apply():
+            del self.pending[key]
+            self.settings.save_brightness_recovery(self.pending)
+            return
         self.backend.set(path, 0)
 
-    def restore(self, key):
+    def _verify_screen(self, key, identity, label, screens):
+        """Ensure the recorded physical monitor is still connected uniquely."""
+        current = _connected(screens)
+        matching = [screen for screen in current if screen_id(screen) == key]
+        if (not identity or len(matching) != 1 or monitor_identity(matching[0]) != identity
+                or sum(_matches(screen, label) for screen in current) != 1):
+            raise BrightnessError(f"Cannot verify the original display for {label}; brightness was not changed.")
+
+    def restore(self, key, screens):
         """Restore a display's saved brightness if it is still at minimum.
 
         Args:
             key (str): Display identifier returned by ``screen_id``.
+            screens: Connected display snapshots or a provider returning them.
 
         Raises:
             BrightnessError: If the display is unavailable or cannot be restored.
@@ -171,16 +205,18 @@ class BrightnessManager:
         record = self.pending.get(key)
         if record is None:
             return
+        self._verify_screen(key, record.get("identity"), record.get("label", "the display"), screens)
         matches = [path for path, label in self.backend.displays() if label == record.get("label")]
         if len(matches) != 1:
             raise BrightnessError(f"Cannot restore brightness for {record.get('label', 'the display')}: display unavailable or ambiguous.")
         path = matches[0]
         if self.backend.read(path) == 0:
+            self._verify_screen(key, record.get("identity"), record.get("label", "the display"), screens)
             self.backend.set(path, int(record["brightness"]))
         del self.pending[key]
         self.settings.save_brightness_recovery(self.pending)
 
-    def restore_all(self):
+    def restore_all(self, screens):
         """Try to restore all saved brightness values, retaining failures.
 
         Returns:
@@ -189,7 +225,7 @@ class BrightnessManager:
         errors = []
         for key in list(self.pending):
             try:
-                self.restore(key)
+                self.restore(key, screens)
             except BrightnessError as error:
                 errors.append(str(error))
         return errors

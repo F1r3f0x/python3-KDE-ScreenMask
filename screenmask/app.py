@@ -1,5 +1,6 @@
 """Coordinate application startup, display masks, settings, and tray actions."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -7,13 +8,18 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from .brightness import BrightnessError, BrightnessManager
+from .brightness_async import AsyncBrightness
 from .dialog import SettingsDialog
 from .displays import screen_id
 from .layer_windows import LayerIdentifyWindow, LayerMaskWindow
 from .settings import Settings
 from .single_instance import SingleInstance
 from .windows import IdentifyWindow, MaskWindow
+
+
+def configure_renderer():
+    """Default Qt Quick to software rendering unless explicitly configured."""
+    os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 
 def app_icon():
@@ -52,7 +58,11 @@ class Controller:
         """
         self.app = app
         self.settings = settings or Settings()
-        self.brightness = BrightnessManager(self.settings)
+        self.brightness = AsyncBrightness(self.settings)
+        self.brightness.set_screens(self.app.screens())
+        self.brightness.errors.connect(self.report_brightness_errors)
+        self.brightness.drained.connect(self.app.quit)
+        self._quitting = False
         self.masks = {}
         self.identifiers = []
         self.identify_timer = QTimer()
@@ -85,7 +95,7 @@ class Controller:
 
     def start(self):
         """Show initial settings or activate the saved display selection."""
-        self.report_brightness_errors(self.brightness.restore_all())
+        self.brightness.restore_all()
         if not self.settings.configured or not self.tray:
             self.open_settings(activate_after_save=True)
         else:
@@ -127,6 +137,8 @@ class Controller:
 
     def activate(self):
         """Show masks on selected, connected displays or open settings."""
+        if self._quitting:
+            return
         if not self.settings.configured:
             self.open_settings(activate_after_save=True)
             return
@@ -143,7 +155,6 @@ class Controller:
         Args:
             screens (Iterable[QScreen]): Displays to cover.
         """
-        errors = []
         for screen in screens:
             key = screen_id(screen)
             if key not in self.masks:
@@ -157,11 +168,7 @@ class Controller:
                 mask.showFullScreen()
                 self.update_dialog_mask_state()
                 if self.settings.lower_brightness:
-                    try:
-                        self.brightness.lower(screen, self.app.screens())
-                    except BrightnessError as error:
-                        errors.append(str(error))
-        self.report_brightness_errors(errors)
+                    self.brightness.lower(screen, self.app.screens())
 
     def report_brightness_errors(self, errors):
         """Report brightness problems without blocking the tray application.
@@ -186,13 +193,10 @@ class Controller:
         """
         mask = self.masks.pop(key, None)
         if mask is not None:
-            try:
-                self.brightness.restore(key)
-            except BrightnessError as error:
-                self.report_brightness_errors([str(error)])
             mask.close()
             mask.deleteLater()
             self.update_dialog_mask_state()
+            self.brightness.restore(key)
 
     def dismiss_all(self):
         """Close every currently visible mask."""
@@ -244,17 +248,12 @@ class Controller:
                     mask.update()
                     mask.set_panel_avoidance(self.settings.avoid_panels)
             if self.brightness_before_edit != self.settings.lower_brightness:
-                errors = []
                 if self.settings.lower_brightness:
                     for screen in self.app.screens():
                         if screen_id(screen) in self.masks:
-                            try:
-                                self.brightness.lower(screen, self.app.screens())
-                            except BrightnessError as error:
-                                errors.append(str(error))
+                            self.brightness.lower(screen, self.app.screens())
                 else:
-                    errors = self.brightness.restore_all()
-                self.report_brightness_errors(errors)
+                    self.brightness.restore_all()
             # An empty selection is a valid saved configuration. Leave the
             # app in the tray instead of reopening settings immediately.
             if activate_after_save and selected:
@@ -268,7 +267,7 @@ class Controller:
                 # Without a tray, the settings window stays available for recovery.
                 self.open_settings()
             elif self.dialog is None:
-                self.app.quit()
+                self.quit()
 
     def identify_displays(self):
         """Briefly show a numbered identification window on each display."""
@@ -298,7 +297,9 @@ class Controller:
         Args:
             screen (QScreen): The display removed by Qt.
         """
-        self.dismiss(screen_id(screen))
+        key = screen_id(screen)
+        self.brightness.set_screens(self.app.screens(), excluded=key)
+        self.dismiss(key)
         if self.dialog is not None:
             QTimer.singleShot(0, lambda: self.dialog and self.dialog.refresh_screens(self.app.screens()))
 
@@ -308,26 +309,32 @@ class Controller:
         Args:
             screen (QScreen): The display added by Qt.
         """
-        if self.brightness.pending:
-            QTimer.singleShot(0, self.restore_unmasked_brightness)
+        QTimer.singleShot(0, self.restore_unmasked_brightness)
         if self.dialog is not None:
             QTimer.singleShot(0, lambda: self.dialog and self.dialog.refresh_screens(self.app.screens()))
 
     def restore_unmasked_brightness(self):
         """Retry recovery for displays that do not have an active mask."""
-        for key in set(self.brightness.pending) - set(self.masks):
-            try:
-                self.brightness.restore(key)
-            except BrightnessError:
-                pass
+        self.brightness.set_screens(self.app.screens())
+        self.brightness.restore_unmasked(self.masks)
 
     def quit(self):
-        """Remove masks and identification windows, then exit Qt."""
+        """Remove masks and exit once queued brightness work finishes."""
+        if self._quitting:
+            return
+        self._quitting = True
         self.clear_identifiers()
         self.dismiss_all()
         if self.tray:
             self.tray.hide()
-        self.app.quit()
+        self.brightness.finish()
+
+    def shutdown_on_exit(self):
+        """Queue restoration if Qt is exiting outside the normal quit action."""
+        if not self._quitting:
+            self._quitting = True
+            self.dismiss_all()
+            self.brightness.finish()
 
 
 def main():
@@ -336,6 +343,7 @@ def main():
     Returns:
         int: The application exit status, or zero after forwarding activation.
     """
+    configure_renderer()
     app = QApplication(sys.argv)
     app.setApplicationName("ScreenMask")
     app.setDesktopFileName("org.screenmask.ScreenMask")
@@ -351,7 +359,7 @@ def main():
     controller = Controller(app)
     instance.activated.connect(controller.activate)
     app.aboutToQuit.connect(instance.close)
-    app.aboutToQuit.connect(controller.dismiss_all)
+    app.aboutToQuit.connect(controller.shutdown_on_exit)
     QTimer.singleShot(0, controller.start)
     return app.exec()
 

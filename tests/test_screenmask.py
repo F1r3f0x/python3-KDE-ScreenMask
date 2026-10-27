@@ -13,10 +13,10 @@ from PySide6.QtGui import QColor, QIcon
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QSystemTrayIcon
 
-from screenmask.app import Controller, app_icon
+from screenmask.app import Controller, app_icon, configure_renderer
 from screenmask.dialog import SettingsDialog
 from screenmask.displays import screen_id
-from screenmask.layer_windows import LayerIdentifyWindow, LayerMaskWindow
+from screenmask.layer_windows import LayerIdentifyWindow, LayerMaskWindow, layer_runtime
 from screenmask.settings import Settings
 from screenmask.windows import IdentifyWindow, MaskWindow, prepare_screen_window
 
@@ -47,6 +47,15 @@ class ScreenMaskTests(unittest.TestCase):
         expected = QIcon(str(svg)).pixmap(64, 64).toImage()
         self.assertFalse(expected.isNull())
         self.assertEqual(app_icon().pixmap(64, 64).toImage(), expected)
+
+    def test_software_renderer_default_preserves_explicit_override(self):
+        """Default to software rendering while respecting user configuration."""
+        with patch.dict(os.environ, {}, clear=True):
+            configure_renderer()
+            self.assertEqual(os.environ["QT_QUICK_BACKEND"], "software")
+        with patch.dict(os.environ, {"QT_QUICK_BACKEND": "rhi"}):
+            configure_renderer()
+            self.assertEqual(os.environ["QT_QUICK_BACKEND"], "rhi")
 
     def test_settings_and_disconnected_display_selection_survive_edits(self):
         """Keep disconnected selections when editing connected displays."""
@@ -116,12 +125,11 @@ class ScreenMaskTests(unittest.TestCase):
         """Retry disconnected displays without brightening active masks."""
         controller = Controller(app, self.settings)
         controller.brightness = Mock()
-        controller.brightness.pending = {"active": {}, "disconnected": {}}
         controller.masks = {"active": Mock()}
         self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
         self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
         controller.restore_unmasked_brightness()
-        controller.brightness.restore.assert_called_once_with("disconnected")
+        controller.brightness.restore_unmasked.assert_called_once_with(controller.masks)
 
     def test_double_click_dismisses_only_the_mask(self):
         """Dismiss a mask on double-click release, but not on a single click."""
@@ -202,6 +210,66 @@ class ScreenMaskTests(unittest.TestCase):
         self.assertEqual(dismissed, [True])
         mask.close()
         identify.close()
+
+    def test_layer_windows_are_destroyed_after_dismissal(self):
+        """Release QML windows when their mask wrappers are disposed."""
+        baseline = len(app.allWindows())
+        for _ in range(3):
+            try:
+                mask = LayerMaskWindow(self.screen, QColor("black"))
+            except RuntimeError as error:
+                if 'module "org.kde.layershell" is not installed' in str(error):
+                    self.skipTest(str(error))
+                raise
+            mask.showFullScreen()
+            app.processEvents()
+            mask.close()
+            mask.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            app.processEvents()
+        self.assertEqual(len(app.allWindows()), baseline)
+
+    def test_layer_windows_share_engine_but_keep_independent_settings(self):
+        """Share QML resources without sharing per-window state."""
+        try:
+            first = LayerMaskWindow(self.screen, QColor("red"), avoid_panels=True)
+            second = LayerMaskWindow(self.screen, QColor("blue"), avoid_panels=False)
+        except RuntimeError as error:
+            if 'module "org.kde.layershell" is not installed' in str(error):
+                self.skipTest(str(error))
+            raise
+        self.assertIs(first.context.engine(), second.context.engine())
+        self.assertEqual(first.window.property("color").name(), "#ff0000")
+        self.assertEqual(second.window.property("color").name(), "#0000ff")
+        self.assertTrue(first.window.property("avoidPanels"))
+        self.assertFalse(second.window.property("avoidPanels"))
+        first.set_panel_avoidance(False)
+        second.set_panel_avoidance(True)
+        self.assertFalse(first.window.property("avoidPanels"))
+        self.assertTrue(second.window.property("avoidPanels"))
+        first.close()
+        second.close()
+        first.deleteLater()
+        second.deleteLater()
+
+    def test_layer_runtime_releases_when_last_window_closes(self):
+        """Keep shared resources for visible windows and release them afterward."""
+        try:
+            first = LayerMaskWindow(self.screen, QColor("black"))
+            second = LayerMaskWindow(self.screen, QColor("white"))
+        except RuntimeError as error:
+            if 'module "org.kde.layershell" is not installed' in str(error):
+                self.skipTest(str(error))
+            raise
+        runtime = layer_runtime()
+        first.close()
+        first.deleteLater()
+        app.processEvents()
+        self.assertIs(layer_runtime(), runtime)
+        second.close()
+        second.deleteLater()
+        app.processEvents()
+        self.assertIsNot(getattr(app, "_screenmask_layer_runtime", None), runtime)
 
     def test_activate_restores_dismissed_mask_and_applies_saved_color(self):
         """Restore dismissed connected masks with the saved color."""

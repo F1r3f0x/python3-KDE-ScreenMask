@@ -12,7 +12,9 @@ Requires Python 3.10 or newer, Python's `venv` and `pip` modules, and PySide6. O
 
 Find **ScreenMask** in the application launcher, then right-click it and choose **Add to Panel** (the wording can vary with Plasma version). Launch it to choose displays and a color. Saving the initial settings shows the masks.
 
-The installer creates a virtual environment in `$XDG_DATA_HOME/screenmask` (normally `~/.local/share/screenmask`), plus a desktop entry and the bundled ScreenMask icon in the corresponding standard directories. Re-run the installer to update from this checkout. Python packaging tools such as `setuptools` and `wheel` need to be available to the virtual environment.
+The installer creates a virtual environment in `$XDG_DATA_HOME/screenmask` (normally `~/.local/share/screenmask`), plus a desktop entry and the bundled ScreenMask icon in the corresponding standard directories. Python packaging tools such as `setuptools` and `wheel` need to be available to the virtual environment.
+
+To update, quit ScreenMask from its tray menu, run `./scripts/install.sh` again, and relaunch it. Quitting first ensures the running process loads the updated code.
 
 ## Use
 
@@ -24,7 +26,7 @@ The installer creates a virtual environment in `$XDG_DATA_HOME/screenmask` (norm
 - **Identify Displays** briefly displays a number on each screen. Numbers match the settings list.
 - Use the color swatches for black, white, red, green, or blue, or choose a custom color.
 - **Keep KDE panels visible** leaves reserved panel areas outside the mask. Auto-hidden panels may behave differently.
-- **Lower brightness to minimum while masked** uses KDE's per-display brightness controls and `busctl`. The previous value is restored when the mask is dismissed; if a display cannot be matched or controlled, the mask still works and ScreenMask reports the issue. After an interruption, reopening ScreenMask retries pending brightness restoration. External monitors need supported and enabled brightness control in KDE; the minimum may still be visible.
+- **Lower brightness to minimum while masked** uses KDE's per-display brightness controls and `busctl`. The previous value is restored when the mask is dismissed; if a display cannot be matched or controlled, the mask still works and ScreenMask reports the issue. ScreenMask identifies a display using its connector and serial number or EDID fingerprint. After an interruption, reopening ScreenMask retries recovery when the identity matches. Identical monitors with identical EDIDs connected to the same port cannot be distinguished; records created by older versions without an identity require manual brightness adjustment. External monitors need supported and enabled brightness control in KDE; the minimum may still be visible.
 - Saved displays that are disconnected are skipped; newly connected displays are not selected automatically. A display's connector and monitor information are used to recognize it, so changing its connector may require selecting it again. If a connector name is unavailable, its position and size are used as a fallback; changing the layout may require selecting that display again.
 
 On systems without a tray, the settings window remains available while masks are active; closing it after dismissing the masks exits the app. ScreenMask does not automatically mask screens when you log in.
@@ -44,6 +46,14 @@ Quit ScreenMask, then run `./scripts/uninstall.sh`. Saved preferences are retain
 ## Desktop behavior
 
 On Wayland, the app uses KDE's layer-shell interface to cover the selected outputs without requesting keyboard focus. On X11, it requests fullscreen, always-on-top windows without activating them. Actual stacking and focus behavior are controlled by the window manager and may differ for games and exclusive fullscreen modes. Verify the behavior with your game and display setup; use the tray menu to recover if needed.
+
+ScreenMask defaults to Qt Quick's software renderer to reduce graphics-driver memory use. Set `QT_QUICK_BACKEND` explicitly before starting the app to choose a different backend. For example, quit the running instance and launch the checkout with:
+
+```sh
+env QT_QUICK_BACKEND=rhi python3 -m screenmask
+```
+
+To compare memory usage between renderers, use the same masked displays and inspect `Pss` in `/proc/<pid>/smaps_rollup`; PSS accounts for shared library pages more accurately than RSS when comparing processes.
 
 ## Tests
 

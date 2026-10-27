@@ -1,8 +1,8 @@
 """Wayland masks backed by KDE's per-output layer-shell interface."""
 
-from PySide6.QtCore import QByteArray, QObject, QUrl, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtCore import QByteArray, QObject, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtQml import QQmlComponent, QQmlContext, QQmlEngine
 
 
 _LAYER_WINDOW = b'''
@@ -53,6 +53,52 @@ Window {
 '''
 
 
+class LayerRuntime:
+    """Share the QML engine and compiled window component across displays."""
+
+    def __init__(self, app):
+        """Create the shared engine and compile the layer-window component.
+
+        Args:
+            app (QGuiApplication): Application owning the QML engine.
+        """
+        self.app = app
+        self.engine = QQmlEngine(app)
+        self.component = QQmlComponent(self.engine, self.engine)
+        self.component.setData(QByteArray(_LAYER_WINDOW), QUrl())
+        self.windows = 0
+
+    def retain(self):
+        """Keep the runtime alive while a layer window uses it."""
+        self.windows += 1
+
+    def release(self):
+        """Release a window and retire the engine after the last one closes."""
+        self.windows -= 1
+        if self.windows == 0:
+            QTimer.singleShot(0, self.retire_if_unused)
+
+    def retire_if_unused(self):
+        """Delete unused QML resources after pending windows are closed."""
+        if self.windows == 0 and getattr(self.app, "_screenmask_layer_runtime", None) is self:
+            del self.app._screenmask_layer_runtime
+            self.engine.deleteLater()
+
+
+def layer_runtime():
+    """Return the application-wide layer-shell QML runtime.
+
+    Returns:
+        LayerRuntime: Shared engine and component for the current application.
+    """
+    app = QGuiApplication.instance()
+    runtime = getattr(app, "_screenmask_layer_runtime", None)
+    if runtime is None:
+        runtime = LayerRuntime(app)
+        app._screenmask_layer_runtime = runtime
+    return runtime
+
+
 class LayerWindow(QObject):
     """Wrap a KDE layer-shell window targeting a specific Wayland display.
 
@@ -74,19 +120,20 @@ class LayerWindow(QObject):
             RuntimeError: If the layer-shell QML component cannot be created.
         """
         super().__init__()
-        self.engine = QQmlEngine(self)
-        context = self.engine.rootContext()
-        context.setContextProperty("targetScreen", screen)
-        context.setContextProperty("initialColor", QColor(color))
-        context.setContextProperty("identifyDisplay", number is not None)
-        context.setContextProperty("identifyNumber", str(number or ""))
-        context.setContextProperty("initialAvoidPanels", avoid_panels)
-        self.component = QQmlComponent(self.engine, self)
-        self.component.setData(QByteArray(_LAYER_WINDOW), QUrl())
-        self.window = self.component.create()
+        runtime = layer_runtime()
+        self.context = QQmlContext(runtime.engine.rootContext(), self)
+        self.context.setContextProperty("targetScreen", screen)
+        self.context.setContextProperty("initialColor", QColor(color))
+        self.context.setContextProperty("identifyDisplay", number is not None)
+        self.context.setContextProperty("identifyNumber", str(number or ""))
+        self.context.setContextProperty("initialAvoidPanels", avoid_panels)
+        self.window = runtime.component.create(self.context)
         if self.window is None:
-            errors = "; ".join(error.toString() for error in self.component.errors())
+            errors = "; ".join(error.toString() for error in runtime.component.errors())
+            runtime.retire_if_unused()
             raise RuntimeError("Could not create a KDE layer-shell window: " + errors)
+        self.runtime = runtime
+        self.runtime.retain()
         self.window.dismissRequested.connect(self.dismissed.emit)
         self.color = QColor(color)
 
@@ -109,8 +156,13 @@ class LayerWindow(QObject):
         self.window.setProperty("avoidPanels", enabled)
 
     def close(self):
-        """Close the underlying QML window."""
-        self.window.close()
+        """Close and schedule deletion of the underlying QML window."""
+        if self.window is not None:
+            window = self.window
+            self.window = None
+            window.close()
+            window.deleteLater()
+            self.runtime.release()
 
 
 class LayerMaskWindow(LayerWindow):
