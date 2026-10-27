@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Lower and restore individual display brightness through KDE PowerDevil."""
 
 import shlex

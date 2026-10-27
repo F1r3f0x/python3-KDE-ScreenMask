@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Serialize brightness operations outside Qt's user-interface thread."""
 
 from concurrent.futures import ThreadPoolExecutor

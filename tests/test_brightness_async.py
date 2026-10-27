@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Exercise asynchronous brightness operation and shutdown ordering."""
 
 import os

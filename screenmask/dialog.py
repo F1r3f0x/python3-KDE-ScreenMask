@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Provide the display and mask-color settings dialog."""
 
 from PySide6.QtCore import Qt, Signal

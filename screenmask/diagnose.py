@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Short, isolated display-placement diagnostic; run from a desktop terminal."""
 
 import sys

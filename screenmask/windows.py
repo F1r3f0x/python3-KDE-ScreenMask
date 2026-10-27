@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Provide Qt widget masks and display-identification windows."""
 
 from PySide6.QtCore import Qt, Signal

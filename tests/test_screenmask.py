@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Exercise settings, mask windows, and controller behavior with Qt."""
 
 import os

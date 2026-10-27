@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Route subsequent launcher invocations to the running process."""
 
 import os

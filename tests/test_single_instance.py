@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Exercise launcher activation between separate processes."""
 
 import os

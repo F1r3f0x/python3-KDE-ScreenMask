@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Coordinate application startup, display masks, settings, and tray actions."""
 
 import os

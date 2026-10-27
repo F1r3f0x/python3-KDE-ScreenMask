@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Persist ScreenMask preferences and brightness recovery state."""
 
 import json

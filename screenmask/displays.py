@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Stable display identifiers and readable labels."""
 
 import hashlib

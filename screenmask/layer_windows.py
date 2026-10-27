@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Wayland masks backed by KDE's per-output layer-shell interface."""
 
 from PySide6.QtCore import QByteArray, QObject, QTimer, QUrl, Signal

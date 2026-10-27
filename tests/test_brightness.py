@@ -1,3 +1,4 @@
+# Author: Patricio Labin Correa <plabin@outlook.cl>
 """Check per-display brightness selection and restoration."""
 
 import tempfile

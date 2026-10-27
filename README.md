@@ -1,6 +1,12 @@
-# ScreenMask
+# KDE-ScreenMask
 
 ScreenMask covers selected displays with a solid color so you can focus on another screen. It is a Python and Qt application for KDE Plasma, with a panel launcher and system tray controls.
+
+Author: [Patricio Labin Correa](mailto:plabin@outlook.cl)
+
+## License
+
+This project is licensed under the GNU General Public License version 3 (GPLv3). See [LICENSE](LICENSE) for the full text.
 
 ## Install
 
