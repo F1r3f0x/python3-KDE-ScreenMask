@@ -17,10 +17,14 @@ The installer creates a virtual environment in `$XDG_DATA_HOME/screenmask` (norm
 ## Use
 
 - Click the tray icon to toggle masks: if any are visible, all are dismissed; otherwise, masks are shown on selected connected displays.
+- Use **Show Masks** or **Hide Masks** in the settings window to toggle them. Showing masks also saves the settings currently displayed.
 - Launch ScreenMask again or choose **Show Masks** in its tray menu to restore masks on selected connected displays.
 - Double-click a mask to dismiss that display's mask. Escape also dismisses a mask if that window has keyboard focus.
 - Use the tray menu to dismiss every mask, open settings, or quit. The app stays in the tray after masks are dismissed.
 - **Identify Displays** briefly displays a number on each screen. Numbers match the settings list.
+- Use the color swatches for black, white, red, green, or blue, or choose a custom color.
+- **Keep KDE panels visible** leaves reserved panel areas outside the mask. Auto-hidden panels may behave differently.
+- **Lower brightness to minimum while masked** uses KDE's per-display brightness controls and `busctl`. The previous value is restored when the mask is dismissed; if a display cannot be matched or controlled, the mask still works and ScreenMask reports the issue. After an interruption, reopening ScreenMask retries pending brightness restoration. External monitors need supported and enabled brightness control in KDE; the minimum may still be visible.
 - Saved displays that are disconnected are skipped; newly connected displays are not selected automatically. A display's connector and monitor information are used to recognize it, so changing its connector may require selecting it again. If a connector name is unavailable, its position and size are used as a fallback; changing the layout may require selecting that display again.
 
 On systems without a tray, the settings window remains available while masks are active; closing it after dismissing the masks exits the app. ScreenMask does not automatically mask screens when you log in.

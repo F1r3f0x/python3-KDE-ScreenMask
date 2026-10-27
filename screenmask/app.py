@@ -7,6 +7,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QSystemTrayIcon
 
+from .brightness import BrightnessError, BrightnessManager
 from .dialog import SettingsDialog
 from .displays import screen_id
 from .layer_windows import LayerIdentifyWindow, LayerMaskWindow
@@ -51,6 +52,7 @@ class Controller:
         """
         self.app = app
         self.settings = settings or Settings()
+        self.brightness = BrightnessManager(self.settings)
         self.masks = {}
         self.identifiers = []
         self.identify_timer = QTimer()
@@ -58,6 +60,8 @@ class Controller:
         self.identify_timer.timeout.connect(self.clear_identifiers)
         self.dialog = None
         self.selection_before_edit = set()
+        self.brightness_before_edit = self.settings.lower_brightness
+        self.activate_after_save = False
         self.tray = None
         wayland = QGuiApplication.platformName().startswith("wayland")
         self.mask_window_type = LayerMaskWindow if wayland else MaskWindow
@@ -81,6 +85,7 @@ class Controller:
 
     def start(self):
         """Show initial settings or activate the saved display selection."""
+        self.report_brightness_errors(self.brightness.restore_all())
         if not self.settings.configured or not self.tray:
             self.open_settings(activate_after_save=True)
         else:
@@ -93,10 +98,32 @@ class Controller:
             reason (QSystemTrayIcon.ActivationReason): Tray activation reason.
         """
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            if self.masks:
-                self.dismiss_all()
-            else:
-                self.activate()
+            self.toggle_masks()
+
+    def toggle_masks(self):
+        """Hide visible masks or show masks using the saved settings."""
+        if self.masks:
+            self.dismiss_all()
+        else:
+            self.activate()
+
+    def toggle_masks_from_dialog(self):
+        """Toggle masks using the settings currently displayed in the dialog."""
+        if self.dialog is None:
+            return
+        self.activate_after_save = False
+        if self.masks:
+            self.dismiss_all()
+        else:
+            self.dialog.persist()
+            self.selection_before_edit = set(self.settings.selected)
+            self.brightness_before_edit = self.settings.lower_brightness
+            self.activate()
+
+    def update_dialog_mask_state(self):
+        """Keep the settings toggle in sync with visible masks."""
+        if self.dialog is not None:
+            self.dialog.set_masks_visible(bool(self.masks))
 
     def activate(self):
         """Show masks on selected, connected displays or open settings."""
@@ -116,17 +143,40 @@ class Controller:
         Args:
             screens (Iterable[QScreen]): Displays to cover.
         """
+        errors = []
         for screen in screens:
             key = screen_id(screen)
             if key not in self.masks:
                 try:
-                    mask = self.mask_window_type(screen, self.settings.color)
+                    mask = self.mask_window_type(screen, self.settings.color, self.settings.avoid_panels)
                 except RuntimeError as error:
                     QMessageBox.critical(None, "ScreenMask", str(error))
                     return
                 mask.dismissed.connect(lambda key=key: self.dismiss(key))
                 self.masks[key] = mask
                 mask.showFullScreen()
+                self.update_dialog_mask_state()
+                if self.settings.lower_brightness:
+                    try:
+                        self.brightness.lower(screen, self.app.screens())
+                    except BrightnessError as error:
+                        errors.append(str(error))
+        self.report_brightness_errors(errors)
+
+    def report_brightness_errors(self, errors):
+        """Report brightness problems without blocking the tray application.
+
+        Args:
+            errors (Iterable[str]): Problems to report to the user.
+        """
+        errors = list(errors)
+        if not errors:
+            return
+        message = "\n".join(errors)
+        if self.tray:
+            self.tray.showMessage("ScreenMask brightness", message, QSystemTrayIcon.MessageIcon.Warning)
+        else:
+            QMessageBox.warning(None, "ScreenMask brightness", message)
 
     def dismiss(self, key):
         """Close and forget the mask associated with a display identifier.
@@ -136,8 +186,13 @@ class Controller:
         """
         mask = self.masks.pop(key, None)
         if mask is not None:
+            try:
+                self.brightness.restore(key)
+            except BrightnessError as error:
+                self.report_brightness_errors([str(error)])
             mask.close()
             mask.deleteLater()
+            self.update_dialog_mask_state()
 
     def dismiss_all(self):
         """Close every currently visible mask."""
@@ -157,9 +212,13 @@ class Controller:
             return
         dialog = SettingsDialog(self.settings, self.app.screens())
         self.selection_before_edit = set(self.settings.selected)
+        self.brightness_before_edit = self.settings.lower_brightness
+        self.activate_after_save = activate_after_save
         self.dialog = dialog
         dialog.identify_requested.connect(self.identify_displays)
-        dialog.finished.connect(lambda result: self.settings_closed(result, activate_after_save))
+        dialog.toggle_requested.connect(self.toggle_masks_from_dialog)
+        self.update_dialog_mask_state()
+        dialog.finished.connect(lambda result: self.settings_closed(result, self.activate_after_save))
         dialog.show()
 
     def settings_closed(self, result, activate_after_save):
@@ -183,6 +242,19 @@ class Controller:
                 else:
                     mask.color = self.settings.color
                     mask.update()
+                    mask.set_panel_avoidance(self.settings.avoid_panels)
+            if self.brightness_before_edit != self.settings.lower_brightness:
+                errors = []
+                if self.settings.lower_brightness:
+                    for screen in self.app.screens():
+                        if screen_id(screen) in self.masks:
+                            try:
+                                self.brightness.lower(screen, self.app.screens())
+                            except BrightnessError as error:
+                                errors.append(str(error))
+                else:
+                    errors = self.brightness.restore_all()
+                self.report_brightness_errors(errors)
             # An empty selection is a valid saved configuration. Leave the
             # app in the tray instead of reopening settings immediately.
             if activate_after_save and selected:
@@ -236,8 +308,18 @@ class Controller:
         Args:
             screen (QScreen): The display added by Qt.
         """
+        if self.brightness.pending:
+            QTimer.singleShot(0, self.restore_unmasked_brightness)
         if self.dialog is not None:
             QTimer.singleShot(0, lambda: self.dialog and self.dialog.refresh_screens(self.app.screens()))
+
+    def restore_unmasked_brightness(self):
+        """Retry recovery for displays that do not have an active mask."""
+        for key in set(self.brightness.pending) - set(self.masks):
+            try:
+                self.brightness.restore(key)
+            except BrightnessError:
+                pass
 
     def quit(self):
         """Remove masks and identification windows, then exit Qt."""
@@ -269,6 +351,7 @@ def main():
     controller = Controller(app)
     instance.activated.connect(controller.activate)
     app.aboutToQuit.connect(instance.close)
+    app.aboutToQuit.connect(controller.dismiss_all)
     QTimer.singleShot(0, controller.start)
     return app.exec()
 

@@ -14,14 +14,16 @@ Window {
     color: initialColor
     property bool identifying: identifyDisplay
     property string displayNumber: identifyNumber
+    property bool avoidPanels: initialAvoidPanels
     readonly property var layerTarget: LayerShell.Window.screen
+    readonly property int panelExclusionZone: LayerShell.Window.exclusionZone
     signal dismissRequested()
 
     LayerShell.Window.screen: targetScreen
     LayerShell.Window.anchors: LayerShell.Window.AnchorTop | LayerShell.Window.AnchorBottom
                                | LayerShell.Window.AnchorLeft | LayerShell.Window.AnchorRight
     LayerShell.Window.layer: LayerShell.Window.LayerOverlay
-    LayerShell.Window.exclusionZone: -1
+    LayerShell.Window.exclusionZone: root.avoidPanels ? 0 : -1
     LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityNone
     LayerShell.Window.activateOnShow: false
     LayerShell.Window.scope: "screenmask"
@@ -59,13 +61,14 @@ class LayerWindow(QObject):
     """
     dismissed = Signal()
 
-    def __init__(self, screen, color, number=None):
+    def __init__(self, screen, color, number=None, avoid_panels=False):
         """Create a mask or numbered identification surface.
 
         Args:
             screen (QScreen): Display targeted by the layer surface.
             color (QColor): Initial background color.
             number (int | None): Display number for an identification surface.
+            avoid_panels (bool): Respect the compositor's reserved panel areas.
 
         Raises:
             RuntimeError: If the layer-shell QML component cannot be created.
@@ -77,6 +80,7 @@ class LayerWindow(QObject):
         context.setContextProperty("initialColor", QColor(color))
         context.setContextProperty("identifyDisplay", number is not None)
         context.setContextProperty("identifyNumber", str(number or ""))
+        context.setContextProperty("initialAvoidPanels", avoid_panels)
         self.component = QQmlComponent(self.engine, self)
         self.component.setData(QByteArray(_LAYER_WINDOW), QUrl())
         self.window = self.component.create()
@@ -96,6 +100,14 @@ class LayerWindow(QObject):
         """Apply the current color to the QML window."""
         self.window.setProperty("color", self.color)
 
+    def set_panel_avoidance(self, enabled):
+        """Choose whether the layer surface avoids reserved panel areas.
+
+        Args:
+            enabled (bool): Whether panel areas should remain uncovered.
+        """
+        self.window.setProperty("avoidPanels", enabled)
+
     def close(self):
         """Close the underlying QML window."""
         self.window.close()
@@ -104,14 +116,15 @@ class LayerWindow(QObject):
 class LayerMaskWindow(LayerWindow):
     """Create a dismissible solid-color Wayland mask."""
 
-    def __init__(self, screen, color):
+    def __init__(self, screen, color, avoid_panels=False):
         """Initialize the mask for a display and color.
 
         Args:
             screen (QScreen): Display to cover.
             color (QColor): Initial mask color.
+            avoid_panels (bool): Whether to leave panel areas uncovered.
         """
-        super().__init__(screen, color)
+        super().__init__(screen, color, avoid_panels=avoid_panels)
 
 
 class LayerIdentifyWindow(LayerWindow):

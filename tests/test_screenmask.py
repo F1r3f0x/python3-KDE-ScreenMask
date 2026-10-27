@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QSettings, Qt
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QSystemTrayIcon
@@ -37,6 +37,7 @@ class ScreenMaskTests(unittest.TestCase):
 
     def tearDown(self):
         """Process pending Qt events and remove temporary settings."""
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
         self.directory.cleanup()
 
@@ -58,6 +59,69 @@ class ScreenMaskTests(unittest.TestCase):
         self.assertEqual(self.settings.selected, [missing])
         self.assertEqual(self.settings.color.name(), "#123456")
         self.assertTrue(self.settings.configured)
+        dialog.deleteLater()
+
+    def test_color_presets_and_display_options_are_saved(self):
+        """Save each requested color preset and both display options."""
+        dialog = SettingsDialog(self.settings, app.screens())
+        for name, value in (("Black", "#000000"), ("White", "#ffffff"),
+                            ("Red", "#ff0000"), ("Green", "#00ff00"), ("Blue", "#0000ff")):
+            QTest.mouseClick(dialog.preset_buttons[name], Qt.MouseButton.LeftButton)
+            self.assertEqual(dialog.color.name(), value)
+        dialog.brightness_checkbox.setChecked(True)
+        dialog.avoid_panels_checkbox.setChecked(True)
+        dialog.save()
+        self.assertEqual(self.settings.color.name(), "#0000ff")
+        self.assertTrue(self.settings.lower_brightness)
+        self.assertTrue(self.settings.avoid_panels)
+        dialog.deleteLater()
+
+    def test_new_mask_lowers_brightness_and_restores_it_on_dismissal(self):
+        """Apply the brightness option per masked screen and restore on close."""
+        key = screen_id(self.screen)
+        self.settings.save([key], QColor("black"), lower_brightness=True, avoid_panels=True)
+        controller = Controller(app, self.settings)
+        controller.brightness = Mock()
+        controller.mask_window_type = Mock(return_value=Mock())
+        self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
+        self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
+        controller.activate()
+        controller.mask_window_type.assert_called_once_with(self.screen, QColor("black"), True)
+        controller.brightness.lower.assert_called_once_with(self.screen, app.screens())
+        controller.dismiss(key)
+        controller.brightness.restore.assert_called_once_with(key)
+
+    def test_settings_apply_brightness_and_panel_changes_to_existing_mask(self):
+        """Apply changed display options without recreating an active mask."""
+        key = screen_id(self.screen)
+        self.settings.save([key], QColor("black"))
+        controller = Controller(app, self.settings)
+        controller.tray = Mock()
+        controller.brightness = Mock()
+        controller.mask_window_type = Mock(return_value=Mock())
+        self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
+        self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
+        self.addCleanup(controller.dismiss_all)
+        controller.activate()
+        mask = controller.masks[key]
+        controller.open_settings()
+        controller.dialog.brightness_checkbox.setChecked(True)
+        controller.dialog.avoid_panels_checkbox.setChecked(True)
+        controller.dialog.save()
+        self.assertIs(controller.masks[key], mask)
+        mask.set_panel_avoidance.assert_called_once_with(True)
+        controller.brightness.lower.assert_called_once_with(self.screen, app.screens())
+
+    def test_recovery_does_not_restore_a_still_masked_display(self):
+        """Retry disconnected displays without brightening active masks."""
+        controller = Controller(app, self.settings)
+        controller.brightness = Mock()
+        controller.brightness.pending = {"active": {}, "disconnected": {}}
+        controller.masks = {"active": Mock()}
+        self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
+        self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
+        controller.restore_unmasked_brightness()
+        controller.brightness.restore.assert_called_once_with("disconnected")
 
     def test_double_click_dismisses_only_the_mask(self):
         """Dismiss a mask on double-click release, but not on a single click."""
@@ -120,6 +184,12 @@ class ScreenMaskTests(unittest.TestCase):
         mask.color = QColor("blue")
         mask.update()
         self.assertEqual(mask.window.property("color").name(), "#0000ff")
+        mask.set_panel_avoidance(True)
+        self.assertTrue(mask.window.property("avoidPanels"))
+        self.assertEqual(mask.window.property("panelExclusionZone"), 0)
+        mask.set_panel_avoidance(False)
+        self.assertFalse(mask.window.property("avoidPanels"))
+        self.assertEqual(mask.window.property("panelExclusionZone"), -1)
         # Offscreen Qt does not implement layer-shell anchoring, so provide a
         # size to exercise its actual QML mouse handler.
         mask.window.resize(300, 200)
@@ -166,6 +236,34 @@ class ScreenMaskTests(unittest.TestCase):
         self.assertFalse(controller.masks)
         controller.tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
         self.assertIn(key, controller.masks)
+
+    def test_settings_toggle_applies_current_choices_and_tracks_masks(self):
+        """Toggle masks from the dialog and keep its label in sync."""
+        controller = Controller(app, self.settings)
+        controller.tray = Mock()
+        controller.mask_window_type = Mock(return_value=Mock())
+        self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
+        self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
+        self.addCleanup(controller.dismiss_all)
+        controller.open_settings(activate_after_save=True)
+        dialog = controller.dialog
+        key = screen_id(self.screen)
+        self.assertEqual(dialog.toggle_button.text(), "Show Masks")
+        self.assertFalse(dialog.toggle_button.isEnabled())
+        dialog.checkboxes[key].setChecked(True)
+        dialog.set_color(QColor("red"))
+        self.assertTrue(dialog.toggle_button.isEnabled())
+        QTest.mouseClick(dialog.toggle_button, Qt.MouseButton.LeftButton)
+        self.assertIn(key, controller.masks)
+        self.assertEqual(self.settings.color.name(), "#ff0000")
+        self.assertEqual(dialog.toggle_button.text(), "Hide Masks")
+        controller.dismiss(key)
+        self.assertEqual(dialog.toggle_button.text(), "Show Masks")
+        QTest.mouseClick(dialog.toggle_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(dialog.toggle_button, Qt.MouseButton.LeftButton)
+        self.assertFalse(controller.masks)
+        dialog.save()
+        self.assertFalse(controller.masks)
 
     def test_setting_changes_update_and_remove_visible_masks(self):
         """Apply color changes and remove masks for deselected displays."""
@@ -266,7 +364,7 @@ class ScreenMaskTests(unittest.TestCase):
         self.settings.save([first_key], QColor("black"))
         controller = Controller(app, self.settings)
         controller.tray = Mock()
-        controller.mask_window_type = Mock(side_effect=lambda screen, color: Mock())
+        controller.mask_window_type = Mock(side_effect=lambda screen, color, avoid_panels: Mock())
         self.addCleanup(app.screenAdded.disconnect, controller.screen_added)
         self.addCleanup(app.screenRemoved.disconnect, controller.screen_removed)
         self.addCleanup(controller.dismiss_all)

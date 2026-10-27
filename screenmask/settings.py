@@ -1,4 +1,6 @@
-"""Persist selected displays and the mask color with Qt settings."""
+"""Persist ScreenMask preferences and brightness recovery state."""
+
+import json
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor
@@ -31,14 +33,49 @@ class Settings:
         color = QColor(self.backend.value("color", "#000000", type=str))
         return color if color.isValid() else QColor("#000000")
 
-    def save(self, selected, color):
+    @property
+    def lower_brightness(self):
+        """bool: Whether masked displays should use minimum brightness."""
+        return self.backend.value("lower_brightness", False, type=bool)
+
+    @property
+    def avoid_panels(self):
+        """bool: Whether masks should leave reserved panel areas visible."""
+        return self.backend.value("avoid_panels", False, type=bool)
+
+    def brightness_recovery(self):
+        """Return brightness values awaiting restoration after an interruption.
+
+        Returns:
+            dict: Saved brightness records indexed by display identifier.
+        """
+        try:
+            value = json.loads(self.backend.value("brightness_recovery", "{}", type=str))
+            return value if isinstance(value, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def save_brightness_recovery(self, records):
+        """Persist brightness restoration records before changing a display.
+
+        Args:
+            records (dict): Display identifiers mapped to restoration records.
+        """
+        self.backend.setValue("brightness_recovery", json.dumps(records))
+        self.backend.sync()
+
+    def save(self, selected, color, lower_brightness=False, avoid_panels=False):
         """Save the display selection and color, then synchronize the store.
 
         Args:
             selected (Iterable[str]): Display identifiers to remember.
             color (QColor): Color to use for masks.
+            lower_brightness (bool): Lower brightness while displays are masked.
+            avoid_panels (bool): Leave desktop panel areas uncovered.
         """
         self.backend.setValue("displays", list(selected))
         self.backend.setValue("color", color.name())
+        self.backend.setValue("lower_brightness", lower_brightness)
+        self.backend.setValue("avoid_panels", avoid_panels)
         self.backend.setValue("configured", True)
         self.backend.sync()

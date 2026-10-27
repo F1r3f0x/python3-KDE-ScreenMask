@@ -29,19 +29,41 @@ class MaskWindow(QWidget):
     """
     dismissed = Signal()
 
-    def __init__(self, screen, color):
+    def __init__(self, screen, color, avoid_panels=False):
         """Create a mask for a display.
 
         Args:
             screen (QScreen): Display to cover.
             color (QColor): Initial mask color.
+            avoid_panels (bool): Whether to leave panel areas uncovered.
         """
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle("ScreenMask")
         self.color = QColor(color)
+        self.target_screen = screen
+        self.avoid_panels = avoid_panels
         self._dismiss_on_release = False
         prepare_screen_window(self, screen)
+
+    def showFullScreen(self):
+        """Show the mask over the display or its panel-free work area."""
+        if self.avoid_panels:
+            self.showNormal()
+            self.setGeometry(self.target_screen.availableGeometry())
+        else:
+            super().showFullScreen()
+
+    def set_panel_avoidance(self, enabled):
+        """Apply the panel visibility setting to this mask.
+
+        Args:
+            enabled (bool): Whether panel areas should remain uncovered.
+        """
+        if self.avoid_panels != enabled:
+            self.avoid_panels = enabled
+            if self.isVisible():
+                self.showFullScreen()
 
     def paintEvent(self, event):
         """Paint the entire window with the current mask color.
